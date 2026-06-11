@@ -1,0 +1,13 @@
+.idea
+
+# Build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+
+# Local secrets — never commit real JWT secret / connection string
+appsettings.Development.json
+appsettings.*.Local.json
+*.secrets.json
