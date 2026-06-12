@@ -23,4 +23,12 @@ public sealed record ChatMessageDto
 
     /// <summary>Set when this message is a reply; null otherwise.</summary>
     public Guid? ParentMessageId { get; init; }
+
+    /// <summary>
+    /// The sender's client-generated nonce, echoed back on the push so
+    /// the sender can reconcile its optimistic bubble with the
+    /// authoritative row (dedupe by nonce). Null on messages not
+    /// originated by a known client send (e.g. system messages).
+    /// </summary>
+    public string? ClientNonce { get; init; }
 }

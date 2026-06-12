@@ -1,4 +1,3 @@
-using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.IdentityModel.Tokens;
@@ -16,7 +15,7 @@ var config = builder.Configuration;
 // confusing 401s / connection errors at first use.
 foreach (var (key, why) in new[]
 {
-    ("Supabase:JwtSecret",        "browser auth will reject every token"),
+    ("Supabase:Issuer",           "browser auth can't fetch signing keys and will reject every token"),
     ("ConnectionStrings:Supabase","channel membership checks will fail closed"),
     ("Internal:PublishSecret",    "the /internal/publish endpoint will reject every call"),
 })
@@ -34,16 +33,28 @@ builder.Services.AddSingleton(_ =>
         ?? throw new InvalidOperationException(
             "ConnectionStrings:Supabase is not configured.")));
 builder.Services.AddScoped<IChannelMembershipService, NpgsqlChannelMembershipService>();
+// The write seam: Supabase-RPC-backed today, swappable for native
+// service logic later without touching the hub.
+builder.Services.AddScoped<IChatMessageService, SupabaseRpcChatMessageService>();
 
 // ── Auth: validate Supabase-issued JWTs ─────────────────────────────
-// Supabase signs user access tokens with the project's JWT secret
-// (HS256, symmetric). The account id rides in the `sub` claim; we keep
-// MapInboundClaims off so it stays the literal "sub".
+// Supabase signs user access tokens with the project's asymmetric JWT
+// signing key (ES256), published at the project's JWKS endpoint. We
+// point the handler at the project's OpenID metadata (Authority) so it
+// fetches those keys and picks up key rotation automatically — the
+// legacy HS256 shared secret is NOT used. The account id rides in the
+// `sub` claim; we keep MapInboundClaims off so it stays the literal "sub".
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.MapInboundClaims = false;
+
+        // {Authority}/.well-known/openid-configuration → jwks_uri.
+        // Issuer is e.g. https://<ref>.supabase.co/auth/v1.
+        options.Authority = config["Supabase:Issuer"];
+        options.RequireHttpsMetadata = true;
+
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -52,8 +63,6 @@ builder.Services
             ValidAudience = config["Supabase:Audience"] ?? "authenticated",
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(config["Supabase:JwtSecret"] ?? "missing-secret")),
             NameClaimType = "sub",
         };
 
@@ -70,6 +79,24 @@ builder.Services
                 {
                     ctx.Token = accessToken;
                 }
+                return Task.CompletedTask;
+            },
+
+            // TEMP diagnostics: surface exactly why a token was rejected
+            // (signature/issuer/audience/lifetime) instead of an opaque
+            // 401. Remove once auth is confirmed working.
+            OnAuthenticationFailed = ctx =>
+            {
+                Console.WriteLine(
+                    $"[auth] FAILED ({ctx.Request.Path}): " +
+                    $"{ctx.Exception.GetType().Name}: {ctx.Exception.Message}");
+                return Task.CompletedTask;
+            },
+            OnChallenge = ctx =>
+            {
+                Console.WriteLine(
+                    $"[auth] CHALLENGE ({ctx.Request.Path}): " +
+                    $"error={ctx.Error}; desc={ctx.ErrorDescription}");
                 return Task.CompletedTask;
             },
         };

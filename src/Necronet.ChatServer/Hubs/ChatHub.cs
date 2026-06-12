@@ -22,11 +22,16 @@ namespace Necronet.ChatServer.Hubs;
 public sealed class ChatHub : Hub<IChatClient>
 {
     private readonly IChannelMembershipService _membership;
+    private readonly IChatMessageService _messages;
     private readonly ILogger<ChatHub> _logger;
 
-    public ChatHub(IChannelMembershipService membership, ILogger<ChatHub> logger)
+    public ChatHub(
+        IChannelMembershipService membership,
+        IChatMessageService messages,
+        ILogger<ChatHub> logger)
     {
         _membership = membership;
+        _messages = messages;
         _logger = logger;
     }
 
@@ -61,4 +66,100 @@ public sealed class ChatHub : Hub<IChatClient>
     /// <summary>Unsubscribe this connection from a channel.</summary>
     public Task LeaveChannel(Guid channelId)
         => Groups.RemoveFromGroupAsync(Context.ConnectionId, ChannelGroups.ForChannel(channelId));
+
+    /// <summary>
+    /// Post a message to a channel. The chat server is the writer: it
+    /// persists the message (via <see cref="IChatMessageService"/>) on
+    /// behalf of the connection's authenticated user, then fans the
+    /// stored row out to the channel group — so the sender gets its own
+    /// message back too and reconciles by client nonce.
+    ///
+    /// The sender is the JWT-validated <see cref="UserId"/>, never
+    /// anything the client supplies, so a client can only post as
+    /// itself. Business-rule refusals (muted / slowmode / locked / not
+    /// a member) come back as a <see cref="HubException"/> the composer
+    /// can show; the underlying RPC is the single source of those gates.
+    /// </summary>
+    public async Task SendMessage(SendMessageRequest request)
+    {
+        try
+        {
+            var message = await _messages.SendAsync(
+                UserId, request, Context.ConnectionAborted);
+
+            await Clients
+                .Group(ChannelGroups.ForChannel(request.ChannelId))
+                .ReceiveMessage(message);
+        }
+        catch (ChatMessageRejectedException ex)
+        {
+            // Expected business-rule refusal — surface the reason.
+            throw new HubException(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            // Infrastructure fault — log it, but don't leak detail.
+            _logger.LogError(ex,
+                "SendMessage failed for user {UserId} channel {ChannelId}",
+                UserId, request.ChannelId);
+            throw new HubException("Could not send message. Please try again.");
+        }
+    }
+
+    /// <summary>
+    /// Subscribe this connection to its DM channel with <paramref
+    /// name="peerId"/> and return that channel's id (or null if no DM
+    /// has been created between them yet). The server resolves the
+    /// channel from the connection's user + the peer, so the client
+    /// stays peer-keyed — it never has to know or send a DM channel id.
+    /// Only ever joins a channel the caller is a participant of.
+    /// </summary>
+    public async Task<Guid?> JoinDm(Guid peerId)
+    {
+        var channelId = await _messages.ResolveDmChannelAsync(
+            UserId, peerId, Context.ConnectionAborted);
+        if (channelId is Guid id)
+        {
+            await Groups.AddToGroupAsync(
+                Context.ConnectionId, ChannelGroups.ForChannel(id));
+        }
+        return channelId;
+    }
+
+    /// <summary>
+    /// Send a 1:1 whisper/DM. The server persists it on the user's
+    /// behalf (DM gates: whisper-privacy + mutual-friend), then returns
+    /// the stored row to the caller AND fans it out to everyone ELSE in
+    /// the DM channel's group. The sender reconciles its optimistic
+    /// bubble (and learns the DM channel id, even for a brand-new
+    /// conversation) from the return value, so there's no self-echo to
+    /// dedupe; peers receive it via <c>ReceiveMessage</c>. The sender's
+    /// connection is added to the group so it receives the peer's future
+    /// replies. Refusals surface as a <see cref="HubException"/>.
+    /// </summary>
+    public async Task<ChatMessageDto> SendDm(SendDmRequest request)
+    {
+        try
+        {
+            var message = await _messages.SendDmAsync(
+                UserId, request, Context.ConnectionAborted);
+
+            var group = ChannelGroups.ForChannel(message.ChannelId);
+            await Groups.AddToGroupAsync(Context.ConnectionId, group);
+            await Clients.OthersInGroup(group).ReceiveMessage(message);
+
+            return message;
+        }
+        catch (ChatMessageRejectedException ex)
+        {
+            throw new HubException(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "SendDm failed for user {UserId} recipient {RecipientId}",
+                UserId, request.RecipientId);
+            throw new HubException("Could not send message. Please try again.");
+        }
+    }
 }
