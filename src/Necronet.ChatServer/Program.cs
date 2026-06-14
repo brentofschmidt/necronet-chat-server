@@ -109,6 +109,10 @@ builder.Services.AddAuthorization();
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<IUserIdProvider, SubUserIdProvider>();
 
+// The watchdog: LISTENs on Postgres 'chat_events' and fans DB-emitted
+// notifications out to the right users. See ChatEventsListener.
+builder.Services.AddHostedService<Necronet.ChatServer.Realtime.ChatEventsListener>();
+
 // ── CORS for the browser client ─────────────────────────────────────
 // Credentialed SignalR requires explicit origins (no wildcard).
 var allowedOrigins = config.GetSection("Cors:AllowedOrigins").Get<string[]>()

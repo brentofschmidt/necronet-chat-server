@@ -18,4 +18,13 @@ public interface IChatClient
 
     /// <summary>A message was deleted (by author or a moderator).</summary>
     Task MessageDeleted(Guid channelId, Guid messageId);
+
+    /// <summary>
+    /// A realtime notification poke for this user (a new join request to
+    /// moderate, a friend request, an approval, …). Originates from the
+    /// DB-fed chat-events watchdog, not from a message send. The client
+    /// keys off <see cref="NotificationDto.Type"/> to refetch the
+    /// relevant list.
+    /// </summary>
+    Task ReceiveNotification(NotificationDto notification);
 }
