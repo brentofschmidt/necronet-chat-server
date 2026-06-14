@@ -106,6 +106,9 @@ public sealed class ChatEventsListener : BackgroundService
                 case "channel_join_request":
                     await NotifyChannelModsAsync(evt);
                     break;
+                case "channel_message_changed":
+                    await NotifyChannelGroupAsync(evt);
+                    break;
                 default:
                     _logger.LogDebug("Ignoring unknown chat_event type '{Type}'", evt.Type);
                     break;
@@ -141,6 +144,23 @@ public sealed class ChatEventsListener : BackgroundService
         }
     }
 
+    // Channel-scoped change (reactions today; edits/deletes/pins later):
+    // fan a refetch signal out to everyone subscribed to the channel's
+    // group. No recipient resolution — the group IS the audience.
+    private async Task NotifyChannelGroupAsync(ChatEvent evt)
+    {
+        if (evt.ChannelId is not Guid channelId) return;
+        var dto = new NotificationDto
+        {
+            Type = evt.Type,
+            ChannelId = channelId,
+            ResourceId = evt.MessageId,
+        };
+        await _hub.Clients
+            .Group(ChannelGroups.ForChannel(channelId))
+            .ReceiveNotification(dto);
+    }
+
     private async Task<List<Guid>> ResolveChannelModsAsync(Guid channelId)
     {
         var ids = new List<Guid>();
@@ -168,5 +188,6 @@ public sealed class ChatEventsListener : BackgroundService
         public Guid? ChannelId { get; init; }
         public Guid? RequestId { get; init; }
         public Guid? RequesterId { get; init; }
+        public Guid? MessageId { get; init; }
     }
 }
