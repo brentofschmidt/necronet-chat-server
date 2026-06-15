@@ -106,9 +106,22 @@ public sealed class ChatEventsListener : BackgroundService
                 case "channel_join_request":
                     await NotifyChannelModsAsync(evt);
                     break;
+
+                // Channel-scoped → everyone viewing the channel.
                 case "channel_message_changed":
+                case "channel_panels_changed":
+                case "channel_meta_changed":
                     await NotifyChannelGroupAsync(evt);
                     break;
+
+                // Per-user → the affected account, wherever they are.
+                case "friend_request":
+                case "friend_request_resolved":
+                case "channel_invitation":
+                case "my_membership_changed":
+                    await NotifyUserAsync(evt);
+                    break;
+
                 default:
                     _logger.LogDebug("Ignoring unknown chat_event type '{Type}'", evt.Type);
                     break;
@@ -161,6 +174,20 @@ public sealed class ChatEventsListener : BackgroundService
             .ReceiveNotification(dto);
     }
 
+    // Direct per-user poke (e.g. a friend request → the target). The
+    // payload carries the recipient, so no resolution query is needed.
+    private async Task NotifyUserAsync(ChatEvent evt)
+    {
+        if (evt.RecipientId is not Guid recipientId) return;
+        var dto = new NotificationDto
+        {
+            Type = evt.Type,
+            ResourceId = evt.RequestId,
+            ActorId = evt.ActorId,
+        };
+        await _hub.Clients.User(recipientId.ToString()).ReceiveNotification(dto);
+    }
+
     private async Task<List<Guid>> ResolveChannelModsAsync(Guid channelId)
     {
         var ids = new List<Guid>();
@@ -189,5 +216,7 @@ public sealed class ChatEventsListener : BackgroundService
         public Guid? RequestId { get; init; }
         public Guid? RequesterId { get; init; }
         public Guid? MessageId { get; init; }
+        public Guid? RecipientId { get; init; }
+        public Guid? ActorId { get; init; }
     }
 }

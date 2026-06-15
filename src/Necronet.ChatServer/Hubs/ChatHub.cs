@@ -148,6 +148,18 @@ public sealed class ChatHub : Hub<IChatClient>
             await Groups.AddToGroupAsync(Context.ConnectionId, group);
             await Clients.OthersInGroup(group).ReceiveMessage(message);
 
+            // Poke the recipient directly so their inbox/badge updates
+            // live even when they don't have this conversation open (and
+            // thus aren't in the channel group). Targets every connection
+            // of that user; no-ops if they're offline.
+            await Clients.User(request.RecipientId.ToString()).ReceiveNotification(
+                new NotificationDto
+                {
+                    Type = "dm",
+                    ChannelId = message.ChannelId,
+                    ActorId = UserId,
+                });
+
             return message;
         }
         catch (ChatMessageRejectedException ex)
